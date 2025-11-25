@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=convert_videos_720p_test
+#SBATCH --job-name=convert_videos_720p_test_fixed
 #SBATCH --out="jobs/slurm-%j_convert_videos_720p_test.out"
 #SBATCH --partition=day
 #SBATCH --time=1-00:00:00
@@ -11,13 +11,22 @@
 module load FFmpeg
 
 INPUT_ZIP="/gpfs/milgram/project/scherzer/fc537/vision_PD/ClinicalD/videos_all.zip"
-OUTPUT_ZIP="/gpfs/milgram/project/gerstein/sz477/vision-pd-data/videos_all_720p_test.zip"
+OUTPUT_ZIP="/gpfs/milgram/project/gerstein/sz477/vision-pd-data/videos_all_720p_test_FIXED.zip"
 TEMP_DIR="./temp_conversion_test_$$"
-LOG_FILE="conversion_log_test_$(date +%Y%m%d_%H%M%S).txt"
+LOG_FILE="conversion_log_test_FIXED_$(date +%Y%m%d_%H%M%S).txt"
+
+# Counter files (to work around subshell issue)
+SUCCESS_FILE="/tmp/success_count_$$"
+FAILED_FILE="/tmp/failed_count_$$"
+echo "0" > "$SUCCESS_FILE"
+echo "0" > "$FAILED_FILE"
 
 # Define which two subdirectories to test (modify these as needed)
 TEST_DIR_1="Y00248.1"
 TEST_DIR_2="Y00247.1"
+
+# Don't exit on errors (let the loop continue)
+set +e
 
 # Check arguments
 if [ -z "$INPUT_ZIP" ] || [ -z "$OUTPUT_ZIP" ]; then
@@ -43,8 +52,11 @@ fi
 # Create temp directory
 mkdir -p "$TEMP_DIR"
 
+# Remove output zip if it exists (start fresh)
+rm -f "$OUTPUT_ZIP"
+
 echo "========================================" | tee -a "$LOG_FILE"
-echo "Video Conversion to 720p (TEST RUN)" | tee -a "$LOG_FILE"
+echo "Video Conversion to 720p (TEST RUN - FIXED)" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "Start time: $(date)" | tee -a "$LOG_FILE"
 echo "Input: $INPUT_ZIP" | tee -a "$LOG_FILE"
@@ -60,8 +72,6 @@ VIDEO_LIST=$(unzip -Z1 "$INPUT_ZIP" | grep -E '\.(MOV|mov|mp4|MP4)$' | grep -v '
 # Count total videos
 TOTAL_VIDEOS=$(echo "$VIDEO_LIST" | grep -v '^$' | wc -l)
 CURRENT=0
-FAILED=0
-SUCCESS=0
 
 echo "Found $TOTAL_VIDEOS video files to convert in test directories" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
@@ -74,8 +84,8 @@ echo "" | tee -a "$LOG_FILE"
 # Start time for ETA calculation
 START_TIME=$(date +%s)
 
-# Process each video
-echo "$VIDEO_LIST" | while IFS= read -r VIDEO_PATH; do
+# Process each video - USE PROCESS SUBSTITUTION, NOT PIPE (fixes subshell issue)
+while IFS= read -r VIDEO_PATH; do
     # Skip empty lines
     [ -z "$VIDEO_PATH" ] && continue
 
@@ -103,9 +113,9 @@ echo "$VIDEO_LIST" | while IFS= read -r VIDEO_PATH; do
     echo "  Extracting..." | tee -a "$LOG_FILE"
     unzip -q -o "$INPUT_ZIP" "$VIDEO_PATH" -d "$TEMP_DIR" 2>&1 | tee -a "$LOG_FILE"
 
-    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    if [ $? -ne 0 ]; then
         echo "  ERROR: Failed to extract" | tee -a "$LOG_FILE"
-        FAILED=$((FAILED + 1))
+        echo $(($(cat "$FAILED_FILE") + 1)) > "$FAILED_FILE"
         continue
     fi
 
@@ -121,9 +131,9 @@ echo "$VIDEO_LIST" | while IFS= read -r VIDEO_PATH; do
     ORIG_SIZE=$(du -h "$INPUT_FILE" | cut -f1)
     echo "  Original: ${ORIG_RES} (${ORIG_SIZE})" | tee -a "$LOG_FILE"
 
-    # Convert to 720p
+    # Convert to 720p - ADD -nostdin to prevent interactive prompts!
     echo "  Converting to 720p..." | tee -a "$LOG_FILE"
-    ffmpeg -i "$INPUT_FILE" \
+    ffmpeg -nostdin -i "$INPUT_FILE" \
            -vf "scale=-2:720" \
            -c:v libx264 \
            -crf 23 \
@@ -132,39 +142,57 @@ echo "$VIDEO_LIST" | while IFS= read -r VIDEO_PATH; do
            -b:a 128k \
            -movflags +faststart \
            "$OUTPUT_FILE" \
-           -y -loglevel error -stats 2>&1 | tee -a "$LOG_FILE"
+           -y -loglevel error 2>&1 | tee -a "$LOG_FILE"
 
-    if [ ${PIPESTATUS[0]} -eq 0 ] && [ -f "$OUTPUT_FILE" ]; then
+    if [ $? -eq 0 ] && [ -f "$OUTPUT_FILE" ]; then
         NEW_SIZE=$(du -h "$OUTPUT_FILE" | cut -f1)
         NEW_RES=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$OUTPUT_FILE" 2>/dev/null)
-        REDUCTION=$(echo "scale=1; (1 - $(stat -f%z "$OUTPUT_FILE" 2>/dev/null || stat -c%s "$OUTPUT_FILE") / $(stat -f%z "$INPUT_FILE" 2>/dev/null || stat -c%s "$INPUT_FILE")) * 100" | bc 2>/dev/null || echo "N/A")
+        
+        # Calculate reduction
+        ORIG_BYTES=$(stat -c%s "$INPUT_FILE" 2>/dev/null || stat -f%z "$INPUT_FILE" 2>/dev/null)
+        NEW_BYTES=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || stat -f%z "$OUTPUT_FILE" 2>/dev/null)
+        if [ -n "$ORIG_BYTES" ] && [ -n "$NEW_BYTES" ] && [ "$ORIG_BYTES" -gt 0 ]; then
+            REDUCTION=$(echo "scale=1; (1 - $NEW_BYTES / $ORIG_BYTES) * 100" | bc 2>/dev/null || echo "N/A")
+        else
+            REDUCTION="N/A"
+        fi
 
         echo "  Converted: ${NEW_RES} (${NEW_SIZE}) - ${REDUCTION}% reduction" | tee -a "$LOG_FILE"
 
         # Add to output zip preserving directory structure
         OUTPUT_PATH="$DIRNAME/${FILENAME%.*}_720p.${FILENAME##*.}"
-        (cd "$TEMP_DIR" && zip -q -9 "$OUTPUT_ZIP" "$OUTPUT_PATH") 2>&1 | tee -a "$LOG_FILE"
+        
+        # Change to temp dir and add file to absolute path zip
+        (cd "$TEMP_DIR" && zip -q -9 "$OUTPUT_ZIP" "$OUTPUT_PATH") 2>&1 | grep -v "^$" | tee -a "$LOG_FILE"
 
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        if [ $? -eq 0 ]; then
             echo "  ✓ Successfully added to archive" | tee -a "$LOG_FILE"
-            SUCCESS=$((SUCCESS + 1))
+            echo $(($(cat "$SUCCESS_FILE") + 1)) > "$SUCCESS_FILE"
         else
             echo "  ERROR: Failed to add to archive" | tee -a "$LOG_FILE"
-            FAILED=$((FAILED + 1))
+            echo $(($(cat "$FAILED_FILE") + 1)) > "$FAILED_FILE"
         fi
 
         # Clean up converted file
         rm -f "$OUTPUT_FILE"
     else
         echo "  ERROR: Conversion failed" | tee -a "$LOG_FILE"
-        FAILED=$((FAILED + 1))
+        echo $(($(cat "$FAILED_FILE") + 1)) > "$FAILED_FILE"
     fi
 
     # Always clean up extracted input file
     rm -f "$INPUT_FILE"
 
     echo "" | tee -a "$LOG_FILE"
-done
+    
+done < <(echo "$VIDEO_LIST")  # CRITICAL: Use process substitution, not pipe!
+
+# Read final counts from files
+SUCCESS=$(cat "$SUCCESS_FILE")
+FAILED=$(cat "$FAILED_FILE")
+
+# Clean up counter files
+rm -f "$SUCCESS_FILE" "$FAILED_FILE"
 
 # Copy folder structure for test directories to new zip
 echo "Creating folder structure in output archive..." | tee -a "$LOG_FILE"
@@ -183,13 +211,36 @@ echo "========================================" | tee -a "$LOG_FILE"
 echo "TEST Conversion Complete!" | tee -a "$LOG_FILE"
 echo "========================================" | tee -a "$LOG_FILE"
 echo "End time: $(date)" | tee -a "$LOG_FILE"
-echo "Total videos processed: $TOTAL_VIDEOS" | tee -a "$LOG_FILE"
+echo "Total videos: $TOTAL_VIDEOS" | tee -a "$LOG_FILE"
 echo "Successful: $SUCCESS" | tee -a "$LOG_FILE"
 echo "Failed: $FAILED" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
-echo "Original archive: $(du -h "$INPUT_ZIP" | cut -f1)" | tee -a "$LOG_FILE"
+
+if [ -f "$INPUT_ZIP" ]; then
+    echo "Original archive: $(du -h "$INPUT_ZIP" | cut -f1)" | tee -a "$LOG_FILE"
+fi
+
 if [ -f "$OUTPUT_ZIP" ]; then
     echo "New test archive: $(du -h "$OUTPUT_ZIP" | cut -f1)" | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
+    echo "Archive contents:" | tee -a "$LOG_FILE"
+    unzip -l "$OUTPUT_ZIP" | tail -20 | tee -a "$LOG_FILE"
 fi
+
 echo "" | tee -a "$LOG_FILE"
 echo "Log saved to: $LOG_FILE" | tee -a "$LOG_FILE"
+
+# Final verification
+if [ "$SUCCESS" -eq "$TOTAL_VIDEOS" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo "✓ ALL VIDEOS CONVERTED SUCCESSFULLY!" | tee -a "$LOG_FILE"
+    exit 0
+elif [ "$SUCCESS" -gt 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo "⚠ PARTIAL SUCCESS: $SUCCESS/$TOTAL_VIDEOS videos converted" | tee -a "$LOG_FILE"
+    exit 1
+else
+    echo "" | tee -a "$LOG_FILE"
+    echo "✗ CONVERSION FAILED: No videos converted" | tee -a "$LOG_FILE"
+    exit 1
+fi
