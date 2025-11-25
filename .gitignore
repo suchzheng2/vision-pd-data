@@ -1,0 +1,51 @@
+# Temporary directories
+temp_conversion_*/
+
+# Log files
+*.log
+*.txt
+conversion_log_*.txt
+
+# Slurm job output
+jobs/
+slurm-*.out
+
+# Video files (large files)
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.avi
+*.AVI
+
+# Zip archives (large files)
+*.zip
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.env
+.venv/
+venv/
+ENV/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
