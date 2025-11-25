@@ -4,7 +4,7 @@ temp_conversion_*/
 # Log files
 *.log
 *.txt
-conversion_log_*.txt
+# conversion_log_*.txt
 
 # Slurm job output
 jobs/
