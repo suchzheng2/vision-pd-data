@@ -49,3 +49,6 @@ ENV/
 *.swp
 *.swo
 *~
+
+videos_all_720p.zip
+videos_all_720p_test.zip
