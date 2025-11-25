@@ -133,7 +133,7 @@ echo "$VIDEO_LIST" | while IFS= read -r VIDEO_PATH; do
         
         # Add to output zip preserving directory structure
         OUTPUT_PATH="$DIRNAME/${FILENAME%.*}_720p.${FILENAME##*.}"
-        (cd "$TEMP_DIR" && zip -q -9 "../$OUTPUT_ZIP" "$OUTPUT_PATH") 2>&1 | tee -a "$LOG_FILE"
+        (cd "$TEMP_DIR" && zip -q -9 "$OUTPUT_ZIP" "$OUTPUT_PATH") 2>&1 | tee -a "$LOG_FILE"
         
         if [ ${PIPESTATUS[0]} -eq 0 ]; then
             echo "  ✓ Successfully added to archive" | tee -a "$LOG_FILE"
@@ -161,7 +161,7 @@ echo "Creating folder structure in output archive..." | tee -a "$LOG_FILE"
 unzip -Z1 "$INPUT_ZIP" | grep '/$' | while IFS= read -r DIR; do
     [ -z "$DIR" ] && continue
     mkdir -p "$TEMP_DIR/$DIR"
-    (cd "$TEMP_DIR" && zip -q "../$OUTPUT_ZIP" "$DIR" 2>/dev/null)
+    (cd "$TEMP_DIR" && zip -q "$OUTPUT_ZIP" "$DIR" 2>/dev/null)
 done
 
 # Clean up
